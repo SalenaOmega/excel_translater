@@ -1,0 +1,48 @@
+{
+  "_comment": "Edit this file to adapt the pipeline to a new dataset. No code changes needed.",
+
+  "alias_map": {
+    "Date ": "Date",
+    "date": "Date",
+    "销售日期": "Date",
+    "sales_date": "Date",
+    "Category": "Category",
+    "类别": "Category",
+    "Region": "Region",
+    "地区": "Region",
+    "Quantity": "Quantity",
+    "数量": "Quantity",
+    "qty": "Quantity",
+    "Unit Price": "Unit Price",
+    "单价": "Unit Price",
+    "unit_price": "Unit Price",
+    "Amount": "Amount",
+    "金额": "Amount",
+    "销售额": "Amount",
+    "Revenue": "Amount",
+    "Sales": "Amount"
+  },
+
+  "type_map": {
+    "Date":       "date",
+    "Quantity":   "numeric",
+    "Unit Price": "numeric",
+    "Amount":     "numeric"
+  },
+
+  "date_col":   "Date",
+  "amount_col": "Amount",
+
+  "group_cols": ["Category", "Region", "Month"],
+
+  "dedup_key_cols": [],
+
+  "anomaly_rules": [
+    {"name": "neg_quantity",   "col": "Quantity",   "condition": "< 0"},
+    {"name": "neg_amount",     "col": "Amount",     "condition": "< 0"},
+    {"name": "zero_amount",    "col": "Amount",     "condition": "== 0"},
+    {"name": "hi_unit_price",  "col": "Unit Price", "condition": "> 5000"}
+  ],
+
+  "iqr_cols": ["Amount", "Quantity"]
+}
