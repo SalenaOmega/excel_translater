@@ -51,17 +51,24 @@ def rename_fields(
     conflict_warnings lists columns where two source fields mapped to the same
     target but had different non-null values on the same row (value conflict).
 
-    When multiple sources map to the same target the first non-null value wins;
-    conflicting rows are flagged with _alias_conflict_<col>.
+    When multiple sources map to the same target the first non-null value wins.
+    Null normalisation (blank strings, "nan", etc.) is applied before merging
+    so that "  " does not block a valid value in another source column.
+    Conflicting rows are flagged in both _alias_conflict_<col> and _anomaly_flags
+    so they appear in the Exceptions sheet.
     """
     df = df.copy()
     # Strip whitespace from all headers
     df.columns = [str(c).strip() for c in df.columns]
-    # Trim object-column text while we're here
+    # Trim text cells and normalise blank sentinels so they don't block merges
+    df = _normalize_nulls(df)
     for col in df.select_dtypes(include="object").columns:
         df[col] = df[col].apply(lambda v: v.strip() if isinstance(v, str) else v)
 
     df = df.rename(columns=alias_map)
+
+    if "_anomaly_flags" not in df.columns:
+        df["_anomaly_flags"] = ""
 
     conflicts: list[str] = []
     cols = list(df.columns)
@@ -79,7 +86,6 @@ def rename_fields(
                 seen[col] = series_list[0]
                 conflict_masks[col] = pd.Series(False, index=df.index)
                 for s in series_list[1:]:
-                    # Conflict: both are non-null and differ
                     both_present = seen[col].notna() & s.notna()
                     differ = seen[col] != s
                     conflict_masks[col] |= both_present & differ
@@ -91,13 +97,22 @@ def rename_fields(
                     conflict_masks[col] |= both_present & differ
                     seen[col] = seen[col].combine_first(s)
 
+        # Preserve _anomaly_flags (it may be in seen already)
+        flags_series = seen.pop("_anomaly_flags", df["_anomaly_flags"])
         df = pd.DataFrame(seen)
+        df["_anomaly_flags"] = flags_series
 
-        # Add a boolean flag column for each conflicting target field
+        # Record per-column conflict flags and route into _anomaly_flags
         for col, mask in conflict_masks.items():
+            if col == "_anomaly_flags":
+                continue
             if mask.any():
                 conflicts.append(col)
                 df[f"_alias_conflict_{col}"] = mask
+                flag_name = f"alias_conflict_{col}"
+                df.loc[mask, "_anomaly_flags"] = df.loc[mask, "_anomaly_flags"].apply(
+                    lambda x: f"{x},{flag_name}" if x else flag_name
+                )
 
     return df, conflicts
 
@@ -140,8 +155,8 @@ def convert_types(
         if kind == "numeric":
             cleaned = orig.astype(str).str.replace(r"[¥$€,\s]", "", regex=True)
             converted = pd.to_numeric(cleaned, errors="coerce")
-        else:  # date
-            converted = pd.to_datetime(orig, errors="coerce")
+        else:  # date — format="mixed" handles YYYY/MM/DD and YYYY-MM-DD in the same column
+            converted = pd.to_datetime(orig, errors="coerce", format="mixed")
 
         # Rows that were already NaN/blank before conversion are not failures
         was_blank = orig.apply(_is_blank)
@@ -261,11 +276,14 @@ def mark_anomalies(
 
 def deduplicate(df: pd.DataFrame, key_cols: list[str] | None = None) -> pd.DataFrame:
     """
-    Drop duplicate rows, excluding internal helper columns from the key.
-    Fully-blank data rows (all non-internal fields null) are dropped first.
+    Drop duplicate rows. Fully-blank data rows are dropped first.
+
+    Only pure-marker columns (_source, _anomaly_flags) are excluded from the
+    dedup key. _orig_<col> columns are KEPT in the key so that two rows with
+    different original values that both failed conversion are not merged.
     """
-    internal = {c for c in df.columns if c.startswith("_")}
-    data_cols = [c for c in df.columns if c not in internal]
+    marker_cols = {"_source", "_anomaly_flags"}
+    data_cols = [c for c in df.columns if c not in marker_cols]
 
     # Drop rows where every data column is blank
     df = df[~df[data_cols].apply(lambda r: r.apply(_is_blank).all(), axis=1)].copy()
